@@ -6,9 +6,9 @@ import { hexValue, resolveProperties } from 'ethers/lib/utils'
 import { ClientConfig } from './ClientConfig'
 import { ERC4337EthersSigner } from './ERC4337EthersSigner'
 import { UserOperationEventListener } from './UserOperationEventListener'
-import { HttpRpcClient } from './HttpRpcClient'
+import { HttpRpcClient, UserOperationStructWithoutFee } from './HttpRpcClient'
 import { EntryPoint, UserOperationStruct } from '@account-abstraction/contracts'
-import { getUserOpHash } from '@account-abstraction/utils'
+// import { getUserOpHash } from '@account-abstraction/utils'
 import { BaseAccountAPI } from './BaseAccountAPI'
 import Debug from 'debug'
 const debug = Debug('aa.provider')
@@ -89,9 +89,9 @@ export class ERC4337EthersProvider extends BaseProvider {
   }
 
   // fabricate a response in a format usable by ethers users...
-  async constructUserOpTransactionResponse (userOp1: UserOperationStruct): Promise<TransactionResponse> {
+  async constructUserOpTransactionResponse (userOp1: UserOperationStructWithoutFee): Promise<TransactionResponse> {
     const userOp = await resolveProperties(userOp1)
-    const userOpHash = getUserOpHash(userOp, this.config.entryPointAddress, this.chainId)
+    const userOpHash = ""
     const waitForUserOp = async (): Promise<TransactionReceipt> => await new Promise((resolve, reject) => {
       new UserOperationEventListener(
         resolve, reject, this.entryPoint, userOp.sender, userOpHash, userOp.nonce

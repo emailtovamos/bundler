@@ -4,8 +4,22 @@ import { resolveProperties } from 'ethers/lib/utils'
 import { UserOperationStruct } from '@account-abstraction/contracts'
 import Debug from 'debug'
 import { deepHexlify } from '@account-abstraction/utils'
+import type { BaseContract, BigNumber, BigNumberish, BytesLike, CallOverrides, ContractTransaction, Overrides, PayableOverrides, PopulatedTransaction, Signer, utils } from "ethers";
+
 
 const debug = Debug('aa.rpc')
+
+export type UserOperationStructWithoutFee = {
+  sender: string;
+  nonce: BigNumberish;
+  initCode: BytesLike;
+  callData: BytesLike;
+  callGasLimit: BigNumberish;
+  verificationGasLimit: BigNumberish;
+  preVerificationGas: BigNumberish;
+  paymasterAndData: BytesLike;
+  signature: string;
+};
 
 export class HttpRpcClient {
   private readonly userOpJsonRpcProvider: JsonRpcProvider
@@ -33,16 +47,45 @@ export class HttpRpcClient {
     }
   }
 
+  
+
   /**
    * send a UserOperation to the bundler
    * @param userOp1
    * @return userOpHash the id of this operation, for getUserOperationTransaction
    */
-  async sendUserOpToBundler (userOp1: UserOperationStruct): Promise<string> {
+  async sendUserOpToBundler (userOp1: UserOperationStructWithoutFee): Promise<string> {
+    console.log("sendUserOpToBundler")
+    console.log("userOp1: ", userOp1)
     await this.initializing
-    const hexifiedUserOp = deepHexlify(await resolveProperties(userOp1))
+    console.log("initializing done...")
+    
+    const userOperationWithoutFee: UserOperationStructWithoutFee = {
+      sender: userOp1.sender.toString(),
+      nonce: userOp1.nonce.toLocaleString(),
+      initCode: userOp1.initCode.toString(),
+      callData: userOp1.callData.toString(),
+      callGasLimit: userOp1.callGasLimit.toLocaleString(),
+      verificationGasLimit: userOp1.verificationGasLimit.toLocaleString(),
+      preVerificationGas: userOp1.preVerificationGas.toLocaleString(),
+      paymasterAndData: userOp1.paymasterAndData.toString(),
+      signature: userOp1.signature.toString(),
+  };
+
+    const hexifiedUserOp = deepHexlify(await resolveProperties(userOperationWithoutFee))
     const jsonRequestData: [UserOperationStruct, string] = [hexifiedUserOp, this.entryPointAddress]
     await this.printUserOperation('eth_sendUserOperation', jsonRequestData)
+
+    console.log("about to send user operation to bundler..")
+    
+
+    await new Promise(f => setTimeout(f, 10000));
+    function sleep(ms: number): Promise<void> {
+      console.log("Starting to sleep")
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+    sleep(10000)
+
     return await this.userOpJsonRpcProvider
       .send('eth_sendUserOperation', [hexifiedUserOp, this.entryPointAddress])
   }

@@ -1,4 +1,7 @@
-import { ethers, BigNumber, BigNumberish } from 'ethers'
+import { ethers, BigNumber, BigNumberish, BytesLike } from 'ethers'
+import { defaultAbiCoder, hexConcat, hexlify, keccak256, resolveProperties } from 'ethers/lib/utils'
+import { abi as entryPointAbi } from '@account-abstraction/contracts/artifacts/IEntryPoint.json'
+
 import { Provider } from '@ethersproject/providers'
 import {
   EntryPoint, EntryPoint__factory,
@@ -6,10 +9,80 @@ import {
 } from '@account-abstraction/contracts'
 
 import { TransactionDetailsForUserOp } from './TransactionDetailsForUserOp'
-import { resolveProperties } from 'ethers/lib/utils'
 import { PaymasterAPI } from './PaymasterAPI'
-import { getUserOpHash, NotPromise, packUserOp } from '@account-abstraction/utils'
+import { getUserOpHash, NotPromise } from '@account-abstraction/utils'
 import { calcPreVerificationGas, GasOverheads } from './calcPreVerificationGas'
+
+const validateUserOpMethod = 'simulateValidation'
+const UserOpType = entryPointAbi.find(entry => entry.name === validateUserOpMethod)?.inputs[0]
+export function packUserOp (op: NotPromise<UserOperationStructWithoutFee>, forSignature = true): string {
+  if (forSignature) {
+    // lighter signature scheme (must match UserOperation#pack): do encode a zero-length signature, but strip afterwards the appended zero-length value
+    const userOpType = {
+      components: [
+        {
+          type: 'address',
+          name: 'sender'
+        },
+        {
+          type: 'uint256',
+          name: 'nonce'
+        },
+        {
+          type: 'bytes',
+          name: 'initCode'
+        },
+        {
+          type: 'bytes',
+          name: 'callData'
+        },
+        {
+          type: 'uint256',
+          name: 'callGasLimit'
+        },
+        {
+          type: 'uint256',
+          name: 'verificationGasLimit'
+        },
+        {
+          type: 'uint256',
+          name: 'preVerificationGas'
+        },
+        {
+          type: 'bytes',
+          name: 'paymasterAndData'
+        },
+        {
+          type: 'bytes',
+          name: 'signature'
+        }
+      ],
+      name: 'userOp',
+      type: 'tuple'
+    }
+    // console.log('hard-coded userOpType', userOpType)
+    // console.log('from ABI userOpType', UserOpType)
+    let encoded = defaultAbiCoder.encode([userOpType as any], [{
+      ...op,
+      signature: '0x'
+    }])
+    // remove leading word (total length) and trailing word (zero-length signature)
+    encoded = '0x' + encoded.slice(66, encoded.length - 64)
+    return encoded
+  }
+
+  const typevalues = (UserOpType as any).components.map((c: { name: keyof typeof op, type: string }) => ({
+    type: c.type,
+    val: op[c.name]
+  }))
+  return encode(typevalues, forSignature)
+}
+
+function encode (typevalues: Array<{ type: string, val: any }>, forSignature: boolean): string {
+  const types = typevalues.map(typevalue => typevalue.type === 'bytes' && forSignature ? 'bytes32' : typevalue.type)
+  const values = typevalues.map((typevalue) => typevalue.type === 'bytes' && forSignature ? keccak256(typevalue.val) : typevalue.val)
+  return defaultAbiCoder.encode(types, values)
+}
 
 export interface BaseApiParams {
   provider: Provider
@@ -23,6 +96,18 @@ export interface UserOpResult {
   transactionHash: string
   success: boolean
 }
+
+type UserOperationStructWithoutFee = {
+  sender: string;
+  nonce: BigNumberish;
+  initCode: BytesLike;
+  callData: BytesLike;
+  callGasLimit: BigNumberish;
+  verificationGasLimit: BigNumberish;
+  preVerificationGas: BigNumberish;
+  paymasterAndData: BytesLike;
+  signature: string;
+};
 
 /**
  * Base class for all Smart Wallet ERC-4337 Clients to implement.
@@ -162,7 +247,7 @@ export abstract class BaseAccountAPI {
   /**
    * ABI-encode a user operation. used for calldata cost estimation
    */
-  packUserOp (userOp: NotPromise<UserOperationStruct>): string {
+  packUserOp (userOp: NotPromise<UserOperationStructWithoutFee>): string {
     return packUserOp(userOp, false)
   }
 
@@ -192,10 +277,31 @@ export abstract class BaseAccountAPI {
    * This value matches entryPoint.getUserOpHash (calculated off-chain, to avoid a view call)
    * @param userOp userOperation, (signature field ignored)
    */
-  async getUserOpHash (userOp: UserOperationStruct): Promise<string> {
+   async getUserOpHash (userOp: UserOperationStructWithoutFee): Promise<string> {
+    console.log("getUserOpHash ...1")
+    console.log("userOp: ",userOp)
+    // userOp.maxFeePerGas = BigNumber.from(0)
+    // userOp.maxPriorityFeePerGas = BigNumber.from(0)
+    userOp.nonce = BigNumber.from(1)
+    userOp.preVerificationGas = BigNumber.from(45760)
+    userOp.callGasLimit = BigNumber.from(100000000)
+    
     const op = await resolveProperties(userOp)
-    const chainId = await this.provider.getNetwork().then(net => net.chainId)
-    return getUserOpHash(op, this.entryPointAddress, chainId)
+    // todo change op here so that maxFeePerGas & maxPriorityFeePerGas aren't set
+    // op.maxFeePerGas = nil
+
+    console.log("getUserOpHash ...2")
+    // const chainId = await this.provider.getNetwork().then(net => net.chainId)
+    const chainId = 1337
+    return this.getUserOpHash2(op, this.entryPointAddress, chainId)
+  }
+
+  async getUserOpHash2 (op: NotPromise<UserOperationStructWithoutFee>, entryPoint: string, chainId: number): Promise<string> {
+    const userOpHash = keccak256(packUserOp(op, true))
+    const enc = defaultAbiCoder.encode(
+      ['bytes32', 'address', 'uint256'],
+      [userOpHash, entryPoint, chainId])
+    return keccak256(enc)
   }
 
   /**
@@ -226,7 +332,7 @@ export abstract class BaseAccountAPI {
    * - if gas or nonce are missing, read them from the chain (note that we can't fill gaslimit before the account is created)
    * @param info
    */
-  async createUnsignedUserOp (info: TransactionDetailsForUserOp): Promise<UserOperationStruct> {
+  async createUnsignedUserOp (info: TransactionDetailsForUserOp): Promise<UserOperationStructWithoutFee> {
     const {
       callData,
       callGasLimit
@@ -250,6 +356,9 @@ export abstract class BaseAccountAPI {
         maxPriorityFeePerGas = feeData.maxPriorityFeePerGas ?? undefined
       }
     }
+    maxFeePerGas = undefined
+    maxPriorityFeePerGas = undefined
+    console.log("maxFeePerGas set as undefined...")
 
     const partialUserOp: any = {
       sender: this.getAccountAddress(),
@@ -258,8 +367,8 @@ export abstract class BaseAccountAPI {
       callData,
       callGasLimit,
       verificationGasLimit,
-      maxFeePerGas,
-      maxPriorityFeePerGas,
+      // maxFeePerGas,
+      // maxPriorityFeePerGas,
       paymasterAndData: '0x'
     }
 
@@ -284,9 +393,12 @@ export abstract class BaseAccountAPI {
    * Sign the filled userOp.
    * @param userOp the UserOperation to sign (with signature field ignored)
    */
-  async signUserOp (userOp: UserOperationStruct): Promise<UserOperationStruct> {
+  async signUserOp (userOp: UserOperationStructWithoutFee): Promise<UserOperationStructWithoutFee> {
+    console.log("signUserOp...0")
     const userOpHash = await this.getUserOpHash(userOp)
-    const signature = this.signUserOpHash(userOpHash)
+    console.log("signUserOp...1")
+    const signature = (await this.signUserOpHash(userOpHash)).toString()
+    console.log("signUserOp...2")
     return {
       ...userOp,
       signature
@@ -297,7 +409,8 @@ export abstract class BaseAccountAPI {
    * helper method: create and sign a user operation.
    * @param info transaction details for the userOp
    */
-  async createSignedUserOp (info: TransactionDetailsForUserOp): Promise<UserOperationStruct> {
+  async createSignedUserOp (info: TransactionDetailsForUserOp): Promise<UserOperationStructWithoutFee> {
+    console.log("createSignedUserOp...")
     return await this.signUserOp(await this.createUnsignedUserOp(info))
   }
 
